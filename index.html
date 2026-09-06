@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Someday — Bucket List</title>
+
+<!-- Fonts loaded lazily via JS font picker; system font as default -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+<!-- Google Identity Services -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="theme-dark" data-font="system">
+
+<!-- ============================================================
+     GLOBAL SVG DEFS — liquid glass displacement filters.
+     Each glass tier references one of these filters. The turbulence
+     seed differs per tier so adjacent glass surfaces don't look
+     like stamped copies of each other.
+============================================================= -->
+<svg class="lg-defs" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="lg-disp-1" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.010 0.014" numOctaves="2" seed="7" result="noise1"/>
+      <feGaussianBlur in="noise1" stdDeviation="2" result="softNoise1"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise1" scale="18" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lg-disp-2" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.016 0.020" numOctaves="2" seed="23" result="noise2"/>
+      <feGaussianBlur in="noise2" stdDeviation="1.5" result="softNoise2"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise2" scale="22" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lg-disp-pill" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02 0.03" numOctaves="2" seed="41" result="noise3"/>
+      <feGaussianBlur in="noise3" stdDeviation="1.2" result="softNoise3"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise3" scale="14" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+</svg>
+
+<!-- ============================================================
+     BACKGROUND LAYER — collage / custom image / custom video.
+     #bg-collage is populated by the algorithm in script.js.
+     #bg-custom-img / #bg-custom-video are shown instead when the
+     user supplies their own background in Settings.
+============================================================= -->
+<div id="bg-root">
+  <div id="bg-collage" class="bg-layer" aria-hidden="true"></div>
+  <img id="bg-custom-img" class="bg-layer" alt="" hidden />
+  <video id="bg-custom-video" class="bg-layer" autoplay muted loop playsinline hidden></video>
+  <div id="bg-scrim" aria-hidden="true"></div>
+</div>
+
+<!-- ============================================================
+     SIGN-IN SCREEN
+============================================================= -->
+<section id="screen-signin" class="screen">
+  <div class="signin-card liquid-glass lg-hero" data-lg-tier="1">
+    <div class="lg-specular" aria-hidden="true"></div>
+    <div class="lg-content">
+      <p class="signin-eyebrow">Someday</p>
+      <h1 class="signin-title">Your bucket list,<br/>kept beautifully.</h1>
+      <p class="signin-sub">Sign in to save your list and get gentle reminders until it's done.</p>
+
+      <div id="google-signin-button"></div>
+      <button id="btn-fallback-signin" class="btn-pill liquid-glass" data-lg-tier="pill">
+        <span class="lg-specular" aria-hidden="true"></span>
+        <span class="lg-content">Continue with Google</span>
+      </button>
+
+      <button id="btn-skip-signin" class="link-btn">Skip for now</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     HOME SCREEN
+============================================================= -->
+<section id="screen-home" class="screen" hidden>
+
+  <!-- Top bar: title + small liquid-glass level pill + settings entry -->
+  <header id="home-topbar">
+    <div class="topbar-row">
+      <div class="topbar-titles">
+        <p class="topbar-eyebrow" id="home-date"></p>
+        <h1 class="topbar-title">Someday</h1>
+      </div>
+
+      <div class="topbar-actions">
+        <div id="level-pill" class="liquid-glass" data-lg-tier="pill" title="Level">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span id="level-number">1</span><span class="level-ep">·<span id="level-ep">0</span>ep</span>
+          </span>
+        </div>
+
+        <button id="btn-open-settings" class="icon-btn liquid-glass" data-lg-tier="pill" aria-label="Settings">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 8a4 4 0 100 8 4 4 0 000-8zm8.94 3a7.97 7.97 0 00-.14-1.5l2.03-1.58a.5.5 0 00.12-.64l-1.92-3.32a.5.5 0 00-.6-.22l-2.39.96a8.03 8.03 0 00-1.3-.75l-.36-2.54a.5.5 0 00-.5-.43h-3.84a.5.5 0 00-.5.43l-.36 2.54c-.47.2-.9.45-1.3.75l-2.39-.96a.5.5 0 00-.6.22L2.05 7.28a.5.5 0 00.12.64L4.2 9.5c-.06.49-.09.99-.09 1.5s.03 1.01.09 1.5l-2.03 1.58a.5.5 0 00-.12.64l1.92 3.32c.13.23.4.32.6.22l2.39-.96c.4.3.83.55 1.3.75l.36 2.54c.05.25.26.43.5.43h3.84c.24 0 .45-.18.5-.43l.36-2.54c.47-.2.9-.45 1.3-.75l2.39.96c.2.1.47.01.6-.22l1.92-3.32a.5.5 0 00-.12-.64L20.8 12.5c.06-.49.09-.99.09-1.5z"/></svg>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Progress summary strip -->
+    <div id="progress-strip" class="liquid-glass" data-lg-tier="2">
+      <span class="lg-specular" aria-hidden="true"></span>
+      <div class="lg-content">
+        <span id="progress-text">0 of 0 complete</span>
+        <div class="progress-track"><div id="progress-fill"></div></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Scrollable list of bucket list tasks -->
+  <main id="task-scroll">
+    <ul id="task-list"></ul>
+
+    <div id="empty-state" class="empty-state" hidden>
+      <p class="empty-title">Nothing here yet</p>
+      <p class="empty-sub">Tap the plus button to add your first someday.</p>
+    </div>
+
+    <div id="scroll-spacer" aria-hidden="true"></div>
+  </main>
+
+  <!-- Floating add button -->
+  <button id="btn-add-task" class="fab liquid-glass" data-lg-tier="1" aria-label="Add a bucket list task">
+    <span class="lg-specular" aria-hidden="true"></span>
+    <span class="lg-content">
+      <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+    </span>
+  </button>
+</section>
+
+<!-- ============================================================
+     ADD / EDIT TASK BOARD (sheet)
+============================================================= -->
+<div id="sheet-scrim" class="sheet-scrim" hidden></div>
+
+<section id="sheet-add-task" class="sheet liquid-glass" data-lg-tier="1" hidden>
+  <span class="lg-specular" aria-hidden="true"></span>
+  <div class="lg-content sheet-content">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <button id="btn-cancel-task" class="text-btn">Cancel</button>
+      <h2 class="sheet-title" id="sheet-add-title">New Someday</h2>
+      <button id="btn-save-task" class="text-btn text-btn-primary">Save</button>
+    </div>
+
+    <div class="sheet-body">
+      <div class="task-icon-preview" id="task-icon-preview">🌱</div>
+
+      <textarea id="input-task-title" class="task-title-input" rows="2" placeholder="What do you want to do someday?" maxlength="120"></textarea>
+
+      <div class="field-row">
+        <label class="field-label" for="input-task-notes">Notes</label>
+        <textarea id="input-task-notes" class="task-notes-input" rows="3" placeholder="Add a little detail (optional)"></textarea>
+      </div>
+
+      <div class="field-grid">
+        <button id="btn-add-location" class="field-chip liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content"><span class="chip-icon">📍</span><span id="location-chip-text">Add location</span></span>
+        </button>
+
+        <button id="btn-add-image" class="field-chip liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content"><span class="chip-icon">🖼️</span><span id="image-chip-text">Add photo</span></span>
+        </button>
+
+        <div class="field-chip liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span class="chip-icon">🔔</span>
+            <select id="select-reminder" class="reminder-select">
+              <option value="weekly">Remind weekly</option>
+              <option value="monthly">Remind monthly</option>
+              <option value="none">No reminder</option>
+            </select>
+          </span>
+        </div>
+      </div>
+
+      <input id="input-location-text" type="text" placeholder="Where is this?" hidden />
+      <input id="input-image-file" type="file" accept="image/*" hidden />
+      <img id="task-image-preview" class="task-image-preview" hidden alt="" />
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SETTINGS SHEET
+============================================================= -->
+<section id="sheet-settings" class="sheet liquid-glass" data-lg-tier="1" hidden>
+  <span class="lg-specular" aria-hidden="true"></span>
+  <div class="lg-content sheet-content">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <span class="sheet-header-spacer"></span>
+      <h2 class="sheet-title">Settings</h2>
+      <button id="btn-close-settings" class="text-btn text-btn-primary">Done</button>
+    </div>
+
+    <div class="sheet-body settings-body">
+
+      <div class="settings-group">
+        <p class="settings-group-title">Appearance</p>
+
+        <button id="row-font" class="settings-row liquid-glass" data-lg-tier="2">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span class="row-label">Font</span>
+            <span class="row-value" id="font-value">System</span>
+          </span>
+        </button>
+      </div>
+
+      <div class="settings-group">
+        <p class="settings-group-title">Background</p>
+
+        <button id="row-bg-collage" class="settings-row liquid-glass" data-lg-tier="2">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span class="row-label">Auto collage</span>
+            <span class="row-value">From your tasks</span>
+          </span>
+        </button>
+
+        <button id="row-bg-image" class="settings-row liquid-glass" data-lg-tier="2">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span class="row-label">Use my own photo</span>
+            <span class="row-value">Choose file</span>
+          </span>
+        </button>
+        <input id="input-bg-image" type="file" accept="image/*" hidden />
+
+        <button id="row-bg-video" class="settings-row liquid-glass" data-lg-tier="2">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span class="row-label">Use my own video</span>
+            <span class="row-value">Choose file</span>
+          </span>
+        </button>
+        <input id="input-bg-video" type="file" accept="video/*" hidden />
+      </div>
+
+      <div class="settings-group">
+        <p class="settings-group-title">Account</p>
+        <button id="row-signout" class="settings-row liquid-glass" data-lg-tier="2">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">
+            <span class="row-label row-danger">Sign out</span>
+          </span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- Font picker sheet -->
+<section id="sheet-font-picker" class="sheet sheet-compact liquid-glass" data-lg-tier="1" hidden>
+  <span class="lg-specular" aria-hidden="true"></span>
+  <div class="lg-content sheet-content">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <span class="sheet-header-spacer"></span>
+      <h2 class="sheet-title">Font</h2>
+      <button id="btn-close-font" class="text-btn text-btn-primary">Done</button>
+    </div>
+    <ul id="font-list" class="font-list"></ul>
+  </div>
+</section>
+
+<!-- ============================================================
+     REMOVE CONFIRMATION MODAL
+============================================================= -->
+<div id="modal-remove" class="modal-scrim" hidden>
+  <div class="modal-card liquid-glass lg-hero" data-lg-tier="1">
+    <span class="lg-specular" aria-hidden="true"></span>
+    <div class="lg-content">
+      <p class="modal-title">Remove this task?</p>
+      <p class="modal-sub" id="modal-remove-name">This can't be undone.</p>
+      <div class="modal-actions">
+        <button id="btn-remove-no" class="modal-btn liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">No</span>
+        </button>
+        <button id="btn-remove-yes" class="modal-btn modal-btn-danger liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">Yes, remove</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     COMPLETE CONFIRMATION MODAL
+============================================================= -->
+<div id="modal-complete" class="modal-scrim" hidden>
+  <div class="modal-card liquid-glass lg-hero" data-lg-tier="1">
+    <span class="lg-specular" aria-hidden="true"></span>
+    <div class="lg-content">
+      <p class="modal-title">Is this task completed?</p>
+      <p class="modal-sub" id="modal-complete-name"></p>
+      <div class="modal-actions">
+        <button id="btn-complete-no" class="modal-btn liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">Not yet</span>
+        </button>
+        <button id="btn-complete-yes" class="modal-btn modal-btn-primary liquid-glass" data-lg-tier="pill">
+          <span class="lg-specular" aria-hidden="true"></span>
+          <span class="lg-content">Yes, done!</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Completion burst animation overlay (checkmark + particles, iOS-style) -->
+<div id="complete-burst" class="complete-burst" hidden>
+  <svg id="burst-check" viewBox="0 0 100 100" width="120" height="120">
+    <circle id="burst-ring" cx="50" cy="50" r="42" fill="none" stroke="currentColor" stroke-width="4"/>
+    <path id="burst-tick" d="M30 52 L44 66 L72 34" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div id="burst-particles"></div>
+</div>
+
+<!-- Toast for reminder / notification simulation -->
+<div id="toast" class="toast liquid-glass" data-lg-tier="pill" hidden>
+  <span class="lg-specular" aria-hidden="true"></span>
+  <span class="lg-content" id="toast-text"></span>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>

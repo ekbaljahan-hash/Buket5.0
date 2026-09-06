@@ -1,0 +1,523 @@
+/* ==========================================================================
+   SOMEDAY — Bucket List
+   Liquid glass design system
+
+   How the glass is built (see any .liquid-glass element):
+     .liquid-glass            → wrapper: shape, outer shadow, isolation
+       ::before                → LAYER 1  base tint + edge blur/refraction
+       ::after                 → LAYER 2  heavier "core" blur (fake thickness)
+       .lg-specular  (real el) → LAYER 3  pointer/gyro-driven shine
+       .lg-content   (real el) → LAYER 4  actual content, always crisp
+
+   JS sets these custom properties per element, every frame or on move:
+     --spec-x / --spec-y   → 0–100%, position of the specular highlight
+     --lg-l                → 0–1, sampled luminance of what's behind it
+                              (drives tint mix + content color via [data-lg-mode])
+     --ripple-x / --ripple-y / --ripple-t → tap distortion origin + progress
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..600&display=swap');
+
+/* -------------------------------------------------------------------------
+   Tokens
+------------------------------------------------------------------------- */
+:root{
+  --radius-xl: 34px;
+  --radius-l: 26px;
+  --radius-m: 18px;
+  --radius-pill: 999px;
+
+  --accent: #8DA3FF;
+  --accent-mint: #6FE6C4;
+  --accent-danger: #FF8A8A;
+
+  --spring: cubic-bezier(.34, 1.56, .64, 1);
+  --spring-soft: cubic-bezier(.22, 1.12, .36, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+
+  --font-system: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-serif: "Fraunces", Georgia, "Iowan Old Style", serif;
+  --font-rounded: "Varela Round", "SF Pro Rounded", var(--font-system);
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-playful: "Fredoka", var(--font-rounded);
+
+  --font-current: var(--font-system);
+}
+
+body.theme-dark{
+  --canvas-0: #030308;
+  --canvas-1: #0a0b12;
+  --fg: #F6F7FB;
+  --fg-secondary: rgba(246,247,251,.64);
+  --fg-tertiary: rgba(246,247,251,.38);
+  --hairline: rgba(255,255,255,.14);
+  --lg-light-mix: #ffffff;
+  --lg-dark-mix: #05050a;
+  --lg-base-alpha: .16;
+  --scrim: rgba(2,2,6,.55);
+  --shadow-outer: 0 18px 40px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.3);
+  color-scheme: dark;
+}
+
+/* Dark theme is the only theme. */
+
+*{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html,body{ height: 100%; }
+
+/* CRITICAL: any element with the `hidden` attribute must stay hidden,
+   even though several classes below (.screen, .modal-scrim,
+   .complete-burst, #bg-collage) set their own `display` value — an
+   authored display declaration otherwise silently overrides the
+   browser's built-in [hidden]{display:none}, since both come from the
+   same "author" cascade origin. This rule must win everywhere. */
+[hidden]{ display: none !important; }
+body{
+  margin: 0;
+  background: var(--canvas-0);
+  color: var(--fg);
+  font-family: var(--font-current);
+  overflow: hidden;
+  position: relative;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea, select{ font-family: inherit; color: inherit; }
+button{ background: none; border: none; cursor: pointer; }
+ul{ list-style: none; margin: 0; padding: 0; }
+.lg-defs{ position: absolute; width: 0; height: 0; }
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+/* -------------------------------------------------------------------------
+   Background layer
+------------------------------------------------------------------------- */
+#bg-root{ position: fixed; inset: 0; z-index: 0; overflow: hidden; background: var(--canvas-0); }
+.bg-layer{ position: absolute; inset: -3%; width: 106%; height: 106%; object-fit: cover; }
+#bg-collage{
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 3px;
+  filter: saturate(1.05);
+  transform: scale(1.02);
+}
+#bg-collage .collage-tile{
+  position: relative;
+  background-size: cover;
+  background-position: center;
+  filter: blur(2.5px) saturate(1.08);
+  overflow: hidden;
+  will-change: transform;
+}
+#bg-collage .collage-tile::after{
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 32%, rgba(255,255,255,0) 68%, rgba(255,255,255,.10) 100%);
+  mix-blend-mode: screen;
+}
+#bg-custom-img, #bg-custom-video{ object-fit: cover; }
+
+/* No flat gray wash — a thin vertical vignette only, so text stays legible
+   without killing the photo/collage underneath. */
+#bg-scrim{
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,.30) 0%, rgba(0,0,0,0) 22%, rgba(0,0,0,0) 68%, rgba(0,0,0,.38) 100%);
+  pointer-events: none;
+}
+
+
+/* -------------------------------------------------------------------------
+   Liquid glass — the core material
+------------------------------------------------------------------------- */
+.liquid-glass{
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-outer);
+  transition: transform .5s var(--spring), box-shadow .4s var(--ease-out);
+  touch-action: manipulation;
+}
+
+/* Base tier (default) — every task row, chip, button, pill, settings
+   row, font option. These can number in the dozens on screen, so this
+   is deliberately just ONE blur+saturate layer with no SVG filter and
+   no second blur pass: that per-row displacement + double-blur combo
+   was the actual cause of the scroll lag. Still reads as frosted glass. */
+.liquid-glass::before{
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--lg-light-mix) calc(var(--lg-l, .5) * 100%), var(--lg-dark-mix));
+  opacity: var(--lg-base-alpha);
+  backdrop-filter: blur(16px) saturate(155%);
+  -webkit-backdrop-filter: blur(16px) saturate(155%);
+  z-index: 0;
+}
+
+.liquid-glass[data-lg-tier="pill"]{ border-radius: var(--radius-pill); }
+.liquid-glass[data-lg-tier="2"]{ border-radius: var(--radius-m); }
+
+/* Hero tier — opt-in via .lg-hero, used only on the sign-in card, the
+   3 sheets, and the 2 modal cards. At most one or two of these exist
+   on screen at any moment, so the full layered refraction (real
+   feDisplacementMap + a second masked "core" blur for depth) is
+   affordable here without ever touching scroll performance. */
+.liquid-glass.lg-hero::before{
+  backdrop-filter: blur(14px) saturate(165%) url(#lg-disp-1);
+  -webkit-backdrop-filter: blur(14px) saturate(165%);
+}
+.liquid-glass.lg-hero::after{
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  backdrop-filter: blur(28px) saturate(178%) url(#lg-disp-2);
+  -webkit-backdrop-filter: blur(28px) saturate(178%);
+  -webkit-mask-image: radial-gradient(120% 120% at 50% 40%, #000 0%, #000 35%, transparent 78%);
+  mask-image: radial-gradient(120% 120% at 50% 40%, #000 0%, #000 35%, transparent 78%);
+  z-index: 1;
+  opacity: .85;
+}
+.liquid-glass.lg-hero[data-lg-tier="pill"]::before{ backdrop-filter: blur(10px) saturate(160%) url(#lg-disp-pill); -webkit-backdrop-filter: blur(10px) saturate(160%); }
+.liquid-glass.lg-hero[data-lg-tier="pill"]::after{ backdrop-filter: blur(18px) saturate(168%) url(#lg-disp-pill); -webkit-backdrop-filter: blur(18px) saturate(168%); }
+
+/* Inner rim: a soft light catch on the top edge, soft shadow on the
+   bottom edge — reads as a beveled thickness around the whole shape. */
+.liquid-glass{
+  --rim-light: rgba(255,255,255,.55);
+  --rim-shadow: rgba(0,0,0,.35);
+}
+
+.liquid-glass > .lg-content{
+  position: relative; z-index: 3;
+  border-radius: inherit;
+}
+.liquid-glass{
+  outline: 1px solid transparent;
+  box-shadow:
+    var(--shadow-outer),
+    inset 0 1px 0 var(--rim-light),
+    inset 0 -1px 1px var(--rim-shadow),
+    inset 0 0 0 1px var(--hairline);
+}
+
+/* LAYER 3 — specular highlight, real element so JS can move it every
+   frame from pointer position (desktop) or device tilt (mobile). */
+.lg-specular{
+  position: absolute; inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    220px 220px at var(--spec-x, 30%) var(--spec-y, 20%),
+    rgba(255,255,255, var(--spec-strength, .55)) 0%,
+    rgba(255,255,255, calc(var(--spec-strength, .55) * .35)) 22%,
+    transparent 60%
+  );
+  mix-blend-mode: overlay;
+  transition: background-position .12s linear;
+}
+
+
+/* Text/content color adapts to what's behind the glass — set by JS via
+   [data-lg-mode] after sampling luminance, never left to guess. */
+.liquid-glass .lg-content{ color: var(--fg); }
+.liquid-glass[data-lg-mode="on-light"] .lg-content{ color: #12131a; }
+.liquid-glass[data-lg-mode="on-light"] .lg-content .row-value,
+.liquid-glass[data-lg-mode="on-light"] .lg-content .topbar-eyebrow{ color: rgba(18,19,26,.6); }
+.liquid-glass[data-lg-mode="on-dark"] .lg-content{ color: #F6F7FB; }
+
+/* -------------------------------------------------------------------------
+   Screens
+------------------------------------------------------------------------- */
+.screen{
+  position: relative; z-index: 1;
+  height: 100vh; height: 100dvh; width: 100%;
+  display: flex; flex-direction: column;
+}
+
+/* ---- Sign-in ---- */
+#screen-signin{ align-items: center; justify-content: center; padding: 24px; }
+.signin-card{ width: min(420px, 100%); padding: 2px; }
+.signin-card .lg-content{ padding: 40px 30px 32px; text-align: center; }
+.signin-eyebrow{ margin: 0 0 10px; font-size: 14px; letter-spacing: .02em; color: var(--fg-secondary); }
+.signin-title{ margin: 0 0 14px; font-size: 30px; line-height: 1.15; font-weight: 650; letter-spacing: -.01em; }
+.signin-sub{ margin: 0 0 28px; font-size: 15px; line-height: 1.5; color: var(--fg-secondary); }
+#google-signin-button{ display: flex; justify-content: center; margin-bottom: 14px; }
+.btn-pill{ width: 100%; padding: 2px; margin-bottom: 18px; }
+.btn-pill .lg-content{ display: block; padding: 14px 20px; font-size: 15px; font-weight: 600; }
+.link-btn{ font-size: 14px; color: var(--fg-tertiary); text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---- Home ---- */
+#screen-home{ padding: 0; }
+#home-topbar{
+  position: sticky; top: 0; z-index: 5;
+  padding: max(18px, env(safe-area-inset-top)) 18px 12px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.topbar-row{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.topbar-eyebrow{ margin: 0 0 2px; font-size: 13px; color: var(--fg-tertiary); }
+.topbar-title{ margin: 0; font-size: 32px; font-weight: 700; letter-spacing: -.015em; }
+.topbar-actions{ display: flex; align-items: center; gap: 8px; }
+
+#level-pill{ padding: 2px; }
+#level-pill .lg-content{
+  display: flex; align-items: baseline; gap: 3px;
+  padding: 7px 13px; font-size: 12px; font-weight: 700;
+}
+#level-number{ font-size: 14px; }
+.level-ep{ font-size: 10px; font-weight: 600; color: var(--fg-secondary); }
+
+.icon-btn{ width: 38px; height: 38px; padding: 0; flex: none; }
+.icon-btn .lg-content{ width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; padding: 0; }
+
+#progress-strip{ padding: 2px; }
+#progress-strip .lg-content{ padding: 12px 16px; }
+#progress-text{ font-size: 12px; font-weight: 600; color: var(--fg-secondary); }
+.progress-track{ margin-top: 7px; height: 5px; border-radius: 999px; background: rgba(128,128,140,.28); overflow: hidden; }
+#progress-fill{ height: 100%; width: 0%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-mint)); transition: width .7s var(--spring-soft); }
+
+/* ---- Task list ---- */
+#task-scroll{
+  flex: 1; overflow-y: auto; overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 18px 140px;
+  scroll-behavior: smooth;
+}
+#task-list{ display: flex; flex-direction: column; gap: 12px; }
+
+.task-item{
+  padding: 2px;
+  opacity: 0; transform: translateY(28px) scale(.97);
+  transition: opacity .6s var(--ease-out), transform .6s var(--spring-soft);
+}
+.task-item.reveal{ opacity: 1; transform: translateY(0) scale(1); }
+.task-item.is-completing{ animation: task-complete-pop .55s var(--spring) forwards; }
+@keyframes task-complete-pop{
+  0%{ transform: scale(1); }
+  35%{ transform: scale(1.03); }
+  100%{ transform: scale(.9); opacity: 0; }
+}
+
+.task-row{ display: flex; align-items: center; gap: 12px; padding: 14px 14px; }
+.task-row.has-thumb{ padding-right: 10px; }
+
+.task-checkbox{
+  flex: none; width: 28px; height: 28px; border-radius: 9px;
+  border: 1.6px solid var(--fg-tertiary);
+  display: flex; align-items: center; justify-content: center;
+  transition: background .35s var(--spring), border-color .35s var(--spring), transform .3s var(--spring);
+  touch-action: manipulation;
+}
+.task-checkbox svg{ width: 15px; height: 15px; opacity: 0; transform: scale(.4); transition: opacity .3s var(--spring), transform .3s var(--spring); }
+.task-item.is-done .task-checkbox{ background: var(--accent-mint); border-color: var(--accent-mint); }
+.task-item.is-done .task-checkbox svg{ opacity: 1; transform: scale(1); }
+
+.task-main{ flex: 1; min-width: 0; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.task-title{ margin: 0; font-size: 15.5px; font-weight: 600; line-height: 1.32; display: flex; align-items: center; gap: 7px; }
+.task-item.is-done .task-title{ color: var(--fg-tertiary); text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.task-icon{ font-size: 15px; flex: none; }
+.task-meta{ margin-top: 4px; display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--fg-secondary); }
+.task-meta span{ display: inline-flex; align-items: center; gap: 4px; }
+
+.task-thumb{ flex: none; width: 46px; height: 46px; border-radius: 12px; object-fit: cover; }
+
+.task-delete-btn{
+  flex: none; width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg-tertiary);
+  transition: background .2s, color .2s, transform .3s var(--spring);
+}
+.task-delete-btn:active{ transform: scale(.85); }
+
+.empty-state{ text-align: center; padding: 80px 20px; }
+.empty-title{ font-size: 17px; font-weight: 650; margin: 0 0 6px; }
+.empty-sub{ font-size: 14px; color: var(--fg-secondary); margin: 0; }
+#scroll-spacer{ height: 1px; }
+
+/* Floating add button */
+.fab{
+  position: fixed; right: 22px; bottom: calc(28px + env(safe-area-inset-bottom));
+  width: 60px; height: 60px; border-radius: 50%;
+  z-index: 6;
+}
+.fab .lg-content{ width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+
+/* -------------------------------------------------------------------------
+   Sheets
+------------------------------------------------------------------------- */
+.sheet-scrim{
+  position: fixed; inset: 0; z-index: 20;
+  background: var(--scrim);
+  opacity: 0; transition: opacity .35s var(--ease-out), backdrop-filter .35s var(--ease-out);
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  pointer-events: none;
+}
+.sheet-scrim.show{
+  opacity: 1;
+  backdrop-filter: blur(22px) saturate(115%);
+  -webkit-backdrop-filter: blur(22px) saturate(115%);
+  pointer-events: auto;
+}
+
+.sheet{
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 21;
+  max-width: 560px; margin: 0 auto;
+  border-radius: 30px 30px 0 0;
+  max-height: min(86vh, 720px);
+  transform: translateY(105%);
+  transition: transform .55s var(--spring);
+  padding: 2px 2px 0;
+}
+.sheet.show{ transform: translateY(0); }
+.sheet-compact{ max-height: 62vh; }
+.sheet-content{ display: flex; flex-direction: column; height: 100%; max-height: inherit; }
+.sheet-handle{ width: 38px; height: 4.5px; border-radius: 999px; background: var(--fg-tertiary); opacity: .5; margin: 10px auto 4px; flex: none; }
+.sheet-header{ display: flex; align-items: center; justify-content: space-between; padding: 10px 18px 14px; flex: none; }
+.sheet-header-spacer{ width: 52px; }
+.sheet-title{ margin: 0; font-size: 16px; font-weight: 650; }
+.text-btn{ font-size: 15.5px; font-weight: 500; color: var(--fg-secondary); padding: 4px 6px; }
+.text-btn-primary{ color: var(--accent); font-weight: 650; }
+.sheet-body{ padding: 4px 20px calc(28px + env(safe-area-inset-bottom)); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+/* Task board fields */
+.task-icon-preview{ font-size: 34px; text-align: center; margin: 6px 0 14px; }
+.task-title-input{
+  width: 100%; border: none; background: transparent; resize: none;
+  font-size: 21px; font-weight: 650; line-height: 1.3; color: var(--fg);
+  outline: none; padding: 0; margin-bottom: 16px;
+}
+.task-title-input::placeholder{ color: var(--fg-tertiary); }
+.field-row{ margin-bottom: 16px; }
+.field-label{ display: block; font-size: 12px; font-weight: 650; color: var(--fg-tertiary); margin-bottom: 6px; text-transform: none; }
+.task-notes-input{
+  width: 100%; border: none; outline: none; resize: none;
+  background: rgba(128,128,140,.12); border-radius: 14px; padding: 12px 14px;
+  font-size: 16px; line-height: 1.5; color: var(--fg);
+}
+.task-notes-input::placeholder{ color: var(--fg-tertiary); }
+
+.field-grid{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.field-chip{ padding: 2px; flex: none; }
+.field-chip .lg-content{ display: flex; align-items: center; gap: 6px; padding: 9px 14px; font-size: 13.5px; font-weight: 600; }
+.chip-icon{ font-size: 14px; }
+.reminder-select{ background: transparent; border: none; outline: none; font-size: 16px; font-weight: 600; color: inherit; }
+.reminder-select option{ color: #111; }
+#input-location-text{
+  width: 100%; border: none; outline: none;
+  background: rgba(128,128,140,.14); border-radius: 12px;
+  padding: 10px 13px; font-size: 16px; color: var(--fg);
+  margin: -2px 0 10px;
+}
+#input-location-text::placeholder{ color: var(--fg-tertiary); }
+.task-image-preview{ width: 100%; max-height: 180px; object-fit: cover; border-radius: 16px; margin-top: 12px; }
+
+/* Settings rows */
+.settings-body{ padding-top: 4px; }
+.settings-group{ margin-bottom: 22px; }
+.settings-group-title{ font-size: 12.5px; font-weight: 650; color: var(--fg-tertiary); margin: 0 0 8px; padding-left: 4px; }
+.settings-row{ width: 100%; padding: 2px; margin-bottom: 8px; }
+.settings-row .lg-content{ display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
+.row-label{ font-size: 14.5px; font-weight: 600; }
+.row-danger{ color: var(--accent-danger); }
+.row-value{ font-size: 13.5px; color: var(--fg-secondary); }
+
+.font-list{ padding: 6px 20px 30px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.font-option{ padding: 2px; }
+.font-option .lg-content{ display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; font-size: 17px; }
+.font-option.is-selected .lg-content{ color: var(--accent); }
+.font-check{ width: 18px; height: 18px; opacity: 0; }
+.font-option.is-selected .font-check{ opacity: 1; }
+
+/* -------------------------------------------------------------------------
+   Modals
+------------------------------------------------------------------------- */
+.modal-scrim{
+  position: fixed; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--scrim); padding: 24px;
+  opacity: 0; pointer-events: none;
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  transition: opacity .3s var(--ease-out), backdrop-filter .3s var(--ease-out);
+}
+.modal-scrim.show{
+  opacity: 1; pointer-events: auto;
+  backdrop-filter: blur(20px) saturate(115%);
+  -webkit-backdrop-filter: blur(20px) saturate(115%);
+}
+.modal-card{ width: min(320px, 100%); padding: 2px; transform: scale(.85); transition: transform .45s var(--spring); }
+.modal-scrim.show .modal-card{ transform: scale(1); }
+.modal-card .lg-content{ padding: 26px 22px 20px; text-align: center; }
+.modal-title{ margin: 0 0 6px; font-size: 17px; font-weight: 650; }
+.modal-sub{ margin: 0 0 20px; font-size: 13.5px; color: var(--fg-secondary); }
+.modal-actions{ display: flex; gap: 10px; }
+.modal-btn{ flex: 1; padding: 2px; }
+.modal-btn .lg-content{ padding: 12px 10px; font-size: 14.5px; font-weight: 650; }
+.modal-btn-danger .lg-content{ color: var(--accent-danger); }
+.modal-btn-primary .lg-content{ color: var(--accent-mint); }
+
+/* -------------------------------------------------------------------------
+   Completion burst
+------------------------------------------------------------------------- */
+.complete-burst{
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.complete-burst svg{ color: var(--accent-mint); filter: drop-shadow(0 6px 20px rgba(111,230,196,.45)); }
+#burst-ring{ stroke-dasharray: 264; stroke-dashoffset: 264; }
+#burst-tick{ stroke-dasharray: 60; stroke-dashoffset: 60; }
+.complete-burst.play #burst-ring{ animation: burst-ring .5s var(--ease-out) forwards; }
+.complete-burst.play #burst-tick{ animation: burst-tick .4s var(--ease-out) .38s forwards; }
+.complete-burst.play svg{ animation: burst-pop .6s var(--spring); }
+@keyframes burst-ring{ to{ stroke-dashoffset: 0; } }
+@keyframes burst-tick{ to{ stroke-dashoffset: 0; } }
+@keyframes burst-pop{ 0%{ transform: scale(.4); opacity: 0; } 50%{ transform: scale(1.08); opacity: 1; } 100%{ transform: scale(1); } }
+
+.burst-particle{
+  position: absolute; top: 50%; left: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent-mint);
+  animation: burst-particle .8s var(--ease-out) forwards;
+}
+@keyframes burst-particle{
+  0%{ transform: translate(-50%,-50%) scale(1); opacity: 1; }
+  100%{ transform: translate(calc(-50% + var(--px)), calc(-50% + var(--py))) scale(0); opacity: 0; }
+}
+
+/* -------------------------------------------------------------------------
+   Toast
+------------------------------------------------------------------------- */
+.toast{
+  position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 20px); z-index: 50;
+  padding: 2px; opacity: 0; pointer-events: none;
+  transition: transform .5s var(--spring), opacity .4s var(--ease-out);
+}
+.toast.show{ transform: translate(-50%, 0); opacity: 1; }
+.toast .lg-content{ padding: 12px 18px; font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+
+/* -------------------------------------------------------------------------
+   Scrollbars (desktop, unobtrusive)
+------------------------------------------------------------------------- */
+#task-scroll::-webkit-scrollbar{ width: 4px; }
+#task-scroll::-webkit-scrollbar-thumb{ background: rgba(128,128,140,.35); border-radius: 4px; }
+
+/* -------------------------------------------------------------------------
+   Small screens
+------------------------------------------------------------------------- */
+@media (max-width: 380px){
+  .topbar-title{ font-size: 27px; }
+  .fab{ width: 56px; height: 56px; right: 16px; }
+}
+
+/* -------------------------------------------------------------------
+   Phone perf: no mouse on touch devices, so a moving specular
+   highlight has nothing to track — keep it static to save battery/CPU.
+------------------------------------------------------------------- */
+@media (hover: none){
+  .lg-specular{ transition: none; }
+}
